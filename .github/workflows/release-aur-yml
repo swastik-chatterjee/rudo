@@ -1,0 +1,116 @@
+name: Release Binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release Tag (e.g. v0.1.0)"
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      asset_name: ${{ steps.bundle.outputs.asset_name }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel git cargo rust pkgconf gtk4 gtk4-layer-shell curl
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify source
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-targets
+
+      - name: Derive version
+        id: meta
+        shell: bash
+        run: |
+          # Use manual input tag if available, otherwise fallback to GITHUB_REF_NAME
+          ref_name="${{ inputs.tag_name }}"
+          if [[ -z "$ref_name" ]]; then
+            ref_name="${GITHUB_REF_NAME:-}"
+          fi
+
+          version="${ref_name#v}"
+          if [[ -z "$version" || "$version" == "$ref_name" ]]; then
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          fi
+
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ "$version" != "$cargo_version" ]]; then
+            echo "version $version does not match Cargo.toml version $cargo_version" >&2
+            exit 1
+          fi
+
+          # Tag to attach GitHub Release to
+          release_tag="${inputs.tag_name:-$GITHUB_REF_NAME}"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Bundle release archive
+        id: bundle
+        shell: bash
+        run: |
+          version='${{ steps.meta.outputs.version }}'
+          mkdir -p dist/bundle
+          install -Dm755 target/release/rudo dist/bundle/rudo
+          install -Dm644 README.md dist/bundle/README.md
+          install -Dm644 LICENSE dist/bundle/LICENSE
+          install -Dm644 docs/rudo.service dist/bundle/rudo.service
+          install -Dm644 docs/rudo.service dist/rudo.service
+          asset_name="rudo-${version}-x86_64-linux.tar.gz"
+          tar -C dist/bundle -czf "dist/${asset_name}" rudo README.md LICENSE rudo.service
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-archive
+          path: |
+            dist/${{ steps.bundle.outputs.asset_name }}
+            dist/rudo.service
+
+  publish-github-release:
+    runs-on: ubuntu-latest
+    needs: build-release
+
+    steps:
+      - name: Download built archive
+        uses: actions/download-artifact@v4
+        with:
+          name: release-archive
+          path: dist
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build-release.outputs.release_tag }}
+          files: |
+            dist/${{ needs.build-release.outputs.asset_name }}
+            dist/rudo.service
+          generate_release_notes: true
