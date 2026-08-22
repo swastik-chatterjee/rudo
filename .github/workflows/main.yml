@@ -23,40 +23,34 @@ env:
 jobs:
   build-release:
     runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
       asset_name: ${{ steps.bundle.outputs.asset_name }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
 
     steps:
+      - name: Install system dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel git cargo rust pkgconf gtk4 gtk4-layer-shell curl
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system dependencies & build gtk4-layer-shell
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            pkg-config \
-            libgtk-4-dev \
-            libwayland-dev \
-            gobject-introspection \
-            libgirepository1.0-dev \
-            meson \
-            ninja-build \
-            curl
-
-          git clone https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
-          cd /tmp/gtk4-layer-shell
-          meson setup build
-          ninja -C build
-          sudo ninja -C build install
-          sudo ldconfig
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo build artifacts
+        uses: actions/cache@v4
         with:
-          components: fmt, clippy
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Verify source
         run: |
@@ -88,28 +82,26 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Bundle release archive
+      - name: Prepare uncompressed binary
         id: bundle
         shell: bash
         run: |
-          version='${{ steps.meta.outputs.version }}'
-          mkdir -p dist/bundle
-          install -Dm755 target/release/rudo dist/bundle/rudo
-          install -Dm644 README.md dist/bundle/README.md
-          install -Dm644 LICENSE dist/bundle/LICENSE
-          install -Dm644 docs/rudo.service dist/bundle/rudo.service
-          install -Dm644 docs/rudo.service dist/rudo.service
-          asset_name="rudo-${version}-x86_64-linux.tar.gz"
-          tar -C dist/bundle -czf "dist/${asset_name}" rudo README.md LICENSE rudo.service
+          version="${{ steps.meta.outputs.version }}"
+          mkdir -p dist
+
+          asset_name="rudo-${version}-x86_64-linux"
+          
+          # Copy raw binary to dist/ with platform suffix
+          cp target/release/rudo "dist/${asset_name}"
+          chmod +x "dist/${asset_name}"
+
           echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-archive
-          path: |
-            dist/${{ steps.bundle.outputs.asset_name }}
-            dist/rudo.service
+          name: release-binary
+          path: dist/rudo-*
 
   publish-github-release:
     runs-on: ubuntu-latest
@@ -119,14 +111,12 @@ jobs:
       - name: Download built archive
         uses: actions/download-artifact@v4
         with:
-          name: release-archive
+          name: release-binary
           path: dist
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.build-release.outputs.release_tag }}
-          files: |
-            dist/${{ needs.build-release.outputs.asset_name }}
-            dist/rudo.service
+          files: dist/${{ needs.build-release.outputs.asset_name }}
           generate_release_notes: true
