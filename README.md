@@ -180,4 +180,4 @@ just check
 
 ## Status
 
-`rudo` is intentionally small. The codebase is structured to stay easy to change as more dock behavior is added over time.
+`rudo` is intentionally small. The codebase is structured to stay easy to change as more dock behavior is added over time. 
