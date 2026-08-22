@@ -1,13 +1,16 @@
-name: Release Binary
+name: Build and Release Binary
 
 on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release Tag (e.g. v0.1.0)"
+        description: "Release tag (e.g. v0.1.0)"
         required: false
         type: string
   push:
+    branches:
+      - main
+      - master
     tags:
       - "v*"
 
@@ -46,25 +49,20 @@ jobs:
         id: meta
         shell: bash
         run: |
-          # Use manual input tag if available, otherwise fallback to GITHUB_REF_NAME
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          
+          # Priority: Manual Input -> Git Tag Name -> Cargo.toml Version
           ref_name="${{ inputs.tag_name }}"
           if [[ -z "$ref_name" ]]; then
             ref_name="${GITHUB_REF_NAME:-}"
           fi
-
+          
           version="${ref_name#v}"
           if [[ -z "$version" || "$version" == "$ref_name" ]]; then
-            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+            version="$cargo_version"
           fi
 
-          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-          if [[ "$version" != "$cargo_version" ]]; then
-            echo "version $version does not match Cargo.toml version $cargo_version" >&2
-            exit 1
-          fi
-
-          # Tag to attach GitHub Release to
-          release_tag="${inputs.tag_name:-$GITHUB_REF_NAME}"
+          release_tag="v${version}"
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
